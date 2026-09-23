@@ -81,6 +81,7 @@ bash ~/.claude/scripts/claude_lane.sh verify; echo "EXIT=$?"
 |---|---|
 | アカウント割当て（`claude_lane.conf`）。`setup` はレーンAの取り違えを**レーンB作成前に**止める。`verify` は各レーンの割当てと入れ替わり（SWAPPED）を検査する | 「両レーンが別アカウント」という検査は、正しい2アカウントが**逆のレーン**に入った状態でも全部通ってしまうため |
 | `verify`: シェルに `CLAUDE_CODE_OAUTH_TOKEN` があれば FAIL、`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` があれば NOTE | 環境変数のトークンは全レーンの Keychain より優先されるため、両レーンが1アカウントになる。しかも `.claude.json` には現れない |
+| `verify`: フック検査を `settings.json` と `settings.local.json` の**合算**に変更し、各フックが呼ぶスクリプトの実在も確認する | 手順書は「フックは `settings.local.json` にしかない」前提だったが、旧Macの実際の配線は `settings.json` 側（`~/claude-code-config/hooks/` を呼ぶ）だった。新Macで誤って FAIL が出たため修正。スクリプトが無いフックは失敗しても処理を止めないので、安全装置が黙って止まる |
 | `setup`: `primaryApiKey` もレーンBへコピーしない | レーンAの支払い手段をレーンBに引き継がせないため |
 | リンク除外に `.credentials.json` と `.git` を追加 | 前者は資格情報。後者を共有すると `~/.claude-b` がレーンAのリポジトリに見えてしまう |
 | `setup`: レーンB用の古い Keychain 資格情報が残っていれば、消すコマンドを添えて警告する | 手順書にある「作り直したのにログイン画面が出ない」罠を実行時に知らせるため |
@@ -92,10 +93,21 @@ bash ~/.claude/scripts/claude_lane.sh verify; echo "EXIT=$?"
 
 | 検査 | 結果 |
 |---|---|
-| `tests/run.sh`（Linux, bash 5.2.21 / zsh 5.9, 偽 Keychain・偽 VS Code・偽 claude） | **111/111 通過** |
+| `tests/run.sh`（Linux, bash 5.2.21 / zsh 5.9, 偽 Keychain・偽 VS Code・偽 claude） | **118/118 通過** |
 | Keychain 名の導出を元Macの実測値（`~/.claude-team` → `ac37998e`）と突き合わせ | 一致 |
 | shellcheck（`claude_lane.sh` / `install.sh`, warning 以上） | 指摘なし |
 | macOS 実機・`/bin/bash` 3.2・本物の Keychain / VS Code / ログイン | **未実施**（作業環境が Linux で、bash 3.2 の入手もネットワーク制限で不可だった） |
+
+## レーン間で共有されるもの・されないもの
+
+| 項目 | レーンA と B で | 補足 |
+|---|---|---|
+| Claude のアカウント・組織 | 別 | それぞれの Keychain 項目に入っているログイン情報で決まる |
+| Claude のログイン情報（Keychain 項目 `Claude Code-credentials*`） | 別 | 共有すると両レーンが同じアカウントになるため、共有できない |
+| MCP サーバーへのログイン（freee・limitless・miro など） | 別（レーンBで未認証の表示を確認） | レーンBでは未認証から始まる。レーンBで使うなら、`ccb` で `/mcp` から一度認証する |
+| Keychain に入れたその他の秘密情報（API キーなど） | 共通 | 同じ macOS ユーザーのログインキーチェーンを両レーンが使う |
+| 設定・CLAUDE.md・rules・skills・agents・hooks・plugins・会話履歴 | 共通 | `~/.claude-b` 内の symlink が `~/.claude` を指す |
+| MCP サーバーの定義 | 共通（`sync` で A→B に複製） | レーンAで登録し、`claude_lane.sh sync` で降ろす |
 
 ## 触っていないもの
 

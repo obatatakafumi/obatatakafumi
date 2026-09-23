@@ -178,6 +178,25 @@ lane verify; expect_rc "settings.local.json missing" 1 $?
 echo '{"hooks":{}}' > "$H/.claude/settings.local.json"
 lane verify; expect_rc "settings.local.json with 0 hooks" 1 $?
 mv "$H/settings.local.json.away" "$H/.claude/settings.local.json"
+# The old Mac's real shape: every hook in settings.json, running scripts from ~/claude-code-config.
+mkdir -p "$H/claude-code-config/hooks"; touch "$H/claude-code-config/hooks/"{pre,post,prompt,stop}.sh
+jq -n '{model:"opus", hooks:{
+  PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:"bash ~/claude-code-config/hooks/pre.sh"}]}],
+  PostToolUse:[{matcher:"*",hooks:[{type:"command",command:"bash ~/claude-code-config/hooks/post.sh"}]}],
+  UserPromptSubmit:[{hooks:[{type:"command",command:"\"$HOME/claude-code-config/hooks/prompt.sh\""}]}],
+  Stop:[{hooks:[{type:"command",command:"${HOME}/claude-code-config/hooks/stop.sh --quiet"}]}]}}' > "$H/.claude/settings.json"
+echo '{"permissions":{"allow":[]}}' > "$H/.claude/settings.local.json"
+lane verify; expect_rc "hooks wired only in settings.json (settings.local.json has none)" 0 $?
+expect_out "  shows where the hooks are" "hooks  : settings.json=4 settings.local.json=0"
+rm "$H/claude-code-config/hooks/pre.sh"
+lane verify; expect_rc "a hook's script is missing" 1 $?
+expect_out "  names the missing script" "hook script is missing: $H/claude-code-config/hooks/pre.sh"
+touch "$H/claude-code-config/hooks/pre.sh"
+jq 'del(.hooks.Stop)' "$H/.claude/settings.json" > "$H/t" && mv "$H/t" "$H/.claude/settings.json"
+lane verify; expect_rc "one event wired nowhere" 1 $?
+expect_out "  names the event" "hook event Stop is wired in neither"
+jq -n '{hooks:{Stop:[{hooks:[{type:"command",command:"bash ~/claude-code-config/hooks/stop.sh"}]}]}}' > "$H/.claude/settings.local.json"
+lane verify; expect_rc "events split across settings.json and settings.local.json" 0 $?
 rm -rf "$H/.claude/skills"; lane verify; expect_rc "dangling critical symlink" 1 $?
 expect_out "  names it" "DANGLING"
 mkdir "$H/.claude/skills"; rm "$H/.claude-b/rules"; mkdir "$H/.claude-b/rules"

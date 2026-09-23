@@ -198,6 +198,25 @@ cmd_status() {
   log "== shell: CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-<unset>}"
 }
 
+hook_script() {  # $1 hook command -> absolute path of the script it runs; "" when not a plain path
+  local w1 w2 rest p
+  read -r w1 w2 rest <<EOF
+$1
+EOF
+  case "$w1" in
+    bash|sh|zsh|python|python3|node|/bin/bash|/bin/sh|/bin/zsh|/usr/bin/python3|/opt/homebrew/bin/python3) p="$w2" ;;
+    *) p="$w1" ;;
+  esac
+  p="${p#\"}"; p="${p%\"}"; p="${p#\'}"; p="${p%\'}"
+  # shellcheck disable=SC2088  # a literal "~/" in the hook text, expanded here by hand
+  case "$p" in
+    '~/'*)      p="$HOME/${p#\~/}" ;;
+    '$HOME/'*)  p="$HOME/${p#\$HOME/}" ;;
+    '${HOME}/'*) p="$HOME/${p#\$\{HOME\}/}" ;;
+  esac
+  case "$p" in /*) printf '%s' "$p" ;; esac
+}
+
 # $0 acceptance test. No API call, no secret printed. Exit 0 = the two lanes are two subscriptions.
 cmd_verify() {
   local fa fb ea eb aa ab oa ob ka kb rc=0 l n
@@ -276,20 +295,36 @@ cmd_verify() {
   done
   { [ -f "$LANE_B/.claude.json" ] && [ ! -L "$LANE_B/.claude.json" ]; } || { warn "FAIL: $LANE_B/.claude.json must be a REAL file, not a symlink"; rc=1; }
 
-  # git carries NEITHER settings file (.gitignore excludes both), and settings.local.json is the
-  # sole home of the hook wiring -- the external-send deny, the approval gates and the secret scan.
-  # A machine missing it looks completely healthy while every safety gate is off.
-  for n in settings.json settings.local.json; do
-    [ -f "$LANE_A/$n" ] || { warn "FAIL: $LANE_A/$n is missing -- .gitignore excludes it, so a clone never brings it."; rc=1; }
+  # The safety hooks (bash safety gate, secret scan, ...). Claude Code merges the hooks of
+  # settings.json and settings.local.json, so both count: a machine may wire them in either one.
+  # A machine without them looks completely healthy while every safety gate is off.
+  [ -f "$LANE_A/settings.json" ] || { warn "FAIL: $LANE_A/settings.json is missing"; rc=1; }
+  local hf hc hn=0 hsum="" wired c p
+  for hf in "$LANE_A/settings.json" "$LANE_A/settings.local.json"; do
+    [ -f "$hf" ] || continue
+    hc=$(jq '[(.hooks // {})[][]?.hooks[]?] | length' "$hf" 2>/dev/null || echo 0)
+    hn=$((hn + ${hc:-0})); hsum="$hsum ${hf##*/}=${hc:-0}"
   done
-  if [ -f "$LANE_A/settings.local.json" ]; then
-    local hn; hn=$(jq '[.hooks[][]?.hooks[]?] | length' "$LANE_A/settings.local.json" 2>/dev/null || echo 0)
-    [ "${hn:-0}" -gt 0 ] || { warn "FAIL: settings.local.json wires 0 hook commands -- the external-send deny, approval gates and secret scan are ALL OFF."; rc=1; }
-    for e in PreToolUse PostToolUse UserPromptSubmit Stop; do
-      jq -e --arg e "$e" '.hooks[$e]' "$LANE_A/settings.local.json" >/dev/null 2>&1 \
-        || { warn "FAIL: hook event $e is not wired in settings.local.json"; rc=1; }
+  log "hooks  :${hsum:- (no settings file)}"
+  [ "$hn" -gt 0 ] || { warn "FAIL: no hook command is wired in settings.json or settings.local.json -- every safety hook is OFF."; rc=1; }
+  for e in PreToolUse PostToolUse UserPromptSubmit Stop; do
+    wired=0
+    for hf in "$LANE_A/settings.json" "$LANE_A/settings.local.json"; do
+      jq -e --arg e "$e" '((.hooks // {})[$e] // []) | length > 0' "$hf" >/dev/null 2>&1 && wired=1
     done
-  fi
+    [ "$wired" = 1 ] || { warn "FAIL: hook event $e is wired in neither settings.json nor settings.local.json"; rc=1; }
+  done
+  # A wired hook whose script is absent fails open (only exit 2 blocks), so the gate is silently off.
+  # Typical on a new Mac: the hooks run scripts from a repo that has not been cloned yet.
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    p=$(hook_script "$c")
+    [ -z "$p" ] || [ -e "$p" ] || { warn "FAIL: hook script is missing: $p  (hook: $c)"; rc=1; }
+  done <<EOF
+$(for hf in "$LANE_A/settings.json" "$LANE_A/settings.local.json"; do
+    [ -f "$hf" ] && jq -r '(.hooks // {})[][]?.hooks[]?.command // empty' "$hf" 2>/dev/null
+  done | sort -u)
+EOF
 
   # A typo'd CLAUDE_CONFIG_DIR mints an invisible third identity that `status` would never show.
   local kc; kc=$(security dump-keychain 2>/dev/null | grep -c -o '"svce"<blob>="Claude Code-credentials[^"]*"' || true)
